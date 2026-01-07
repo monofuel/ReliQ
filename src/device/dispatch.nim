@@ -35,7 +35,12 @@ import platforms
 
 nvidia: import cuda/[cudawrap]
 amd: import hip/[hipwrap]
-cpu: import simd/[simdtypes]
+cpu: 
+  import simd/[simdtypes, x86wrap]
+  when defined(avx2):
+    import simd/avx2wrap
+  when defined(sse):
+    import simd/ssewrap
 
 var numThreads*: int = 1
 let envThreads = getEnv("OMP_NUM_THREADS")
@@ -67,14 +72,78 @@ macro each*(x: ForLoopStmt): untyped =
       let baseChunkSize = (totalWork + numThreads - 1) div numThreads
       let chunkSize = ((baseChunkSize + vectorWidth - 1) div vectorWidth) * vectorWidth
 
-      proc workerAll(threadId: int) =
+      proc workerAll(threadId: int) {.gcsafe.} =
         let startIdx = `lo` + threadId * chunkSize
         let endIdx = min(`lo` + (threadId + 1) * chunkSize, `hi`)
         
+        # Process vectorWidth-aligned chunks using SIMD for index generation
         var `idnt` = startIdx
+        let vectorEnd = startIdx + ((endIdx - startIdx) div vectorWidth) * vectorWidth
+        
+        # Vectorized section: use SIMD to generate indices efficiently
+        when vectorWidth > 1 and defined(avx2):
+          # Generate base index vector [0, 1, 2, 3, 4, 5, 6, 7] using AVX2
+          when vectorWidth == 8:
+            let baseIndices = mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)
+            let stepVector = mm256_set1_epi32(vectorWidth.cint)
+            var currentBase = mm256_set1_epi32(`idnt`.cint)
+            
+            while `idnt` < vectorEnd:
+              # Generate indices for this chunk: [idnt, idnt+1, ..., idnt+7]
+              let indices = mm256_add_epi32(currentBase, baseIndices)
+              
+              # Extract indices and process each element
+              var indexArray: array[8, int32]
+              mm256_storeu_si256(cast[ptr m256i](addr indexArray[0]), indices)
+              
+              for lane in 0..<vectorWidth:
+                block:
+                  var `idnt` = indexArray[lane].int
+                  `body`
+              
+              # Advance to next chunk
+              currentBase = mm256_add_epi32(currentBase, stepVector)
+              `idnt` += vectorWidth
+          elif vectorWidth == 4 and defined(sse):
+            # Use SSE for 4-wide vectors
+            let baseIndices = mm_setr_epi32(0, 1, 2, 3)
+            let stepVector = mm_set1_epi32(vectorWidth.cint)
+            var currentBase = mm_set1_epi32(`idnt`.cint)
+            
+            while `idnt` < vectorEnd:
+              let indices = mm_add_epi32(currentBase, baseIndices)
+              
+              var indexArray: array[4, int32]
+              mm_storeu_si128(cast[ptr m128i](addr indexArray[0]), indices)
+              
+              for lane in 0..<vectorWidth:
+                block:
+                  var `idnt` = indexArray[lane].int
+                  `body`
+              
+              currentBase = mm_add_epi32(currentBase, stepVector)
+              `idnt` += vectorWidth
+          else:
+            # Fallback: sequential processing
+            while `idnt` < vectorEnd:
+              for lane in 0..<vectorWidth:
+                block:
+                  var `idnt` = `idnt` + lane
+                  `body`
+              `idnt` += vectorWidth
+        else:
+          # No SIMD: sequential processing
+          while `idnt` < vectorEnd:
+            for lane in 0..<vectorWidth:
+              block:
+                var `idnt` = `idnt` + lane
+                `body`
+            `idnt` += vectorWidth
+        
+        # Remainder: process remaining elements one by one
         while `idnt` < endIdx:
           `body`
-          `idnt` += vectorWidth
+          inc `idnt`
       
       var m = createMaster()
       m.awaitAll:
@@ -100,7 +169,7 @@ macro all*(x: ForLoopStmt): untyped =
     let totalWork = `hi` - `lo`
     let baseChunkSize = (totalWork + numThreads - 1) div numThreads
 
-    proc workerEvery(threadId: int) =
+    proc workerEvery(threadId: int) {.gcsafe.} =
       let startIdx = `lo` + threadId * baseChunkSize
       let endIdx = min(`lo` + (threadId + 1) * baseChunkSize, `hi`)
       
@@ -113,8 +182,76 @@ macro all*(x: ForLoopStmt): untyped =
         m.spawn workerEvery(threadId)
 
 when isMainModule:
-  for n in each 0..<80:
-    echo n
+  const testSize = 80
   
-  for n in all 0..<80:
-    echo n
+  block:
+    echo "Testing 'all' macro (threaded, non-vectorized)..."
+    var allResults = cast[ptr UncheckedArray[int]](allocShared0(testSize * sizeof(int)))
+    
+    for n in all 0..<testSize:
+      allResults[n] = n * 2
+    
+    # Verify all elements were processed
+    var allPassed = true
+    var allSum = 0
+    var allExpectedSum = 0
+    for i in 0..<testSize:
+      allSum += allResults[i]
+      allExpectedSum += i * 2
+      if allResults[i] != i * 2:
+        echo "FAIL: allResults[", i, "] = ", allResults[i], ", expected ", i * 2
+        allPassed = false
+        break
+    
+    echo "  Sum of results: ", allSum
+    echo "  Expected sum: ", allExpectedSum
+    echo "  Sample values: allResults[0]=", allResults[0], ", allResults[10]=", allResults[10], ", allResults[", testSize-1, "]=", allResults[testSize-1]
+    
+    if allPassed and allSum == allExpectedSum:
+      echo "✓ 'all' macro test PASSED: All ", testSize, " elements processed correctly"
+    else:
+      echo "✗ 'all' macro test FAILED"
+    
+    deallocShared(allResults)
+  
+  block:
+    echo ""
+    echo "Testing 'each' macro (threaded + vectorized)..."
+    var eachResults = cast[ptr UncheckedArray[int]](allocShared0(testSize * sizeof(int)))
+    
+    for n in each 0..<testSize:
+      eachResults[n] = n * 3
+    
+    # Verify elements were processed (note: each processes in vectorWidth chunks)
+    var eachPassed = true
+    var processedCount = 0
+    var eachSum = 0
+    var eachExpectedSum = 0
+    for i in 0..<testSize:
+      eachSum += eachResults[i]
+      eachExpectedSum += i * 3
+      if eachResults[i] == i * 3:
+        inc processedCount
+    
+    echo "  Processed ", processedCount, " out of ", testSize, " elements"
+    echo "  Sum of results: ", eachSum
+    echo "  Expected sum: ", eachExpectedSum
+    echo "  Sample values: eachResults[0]=", eachResults[0], ", eachResults[10]=", eachResults[10], ", eachResults[", testSize-1, "]=", eachResults[testSize-1]
+    echo "  (Note: 'each' processes in vectorWidth=", vectorWidth, " chunks)"
+    
+    if eachPassed and processedCount == testSize and eachSum == eachExpectedSum:
+      echo "✓ 'each' macro test PASSED: Vectorized processing working correctly"
+    else:
+      echo "✗ 'each' macro test FAILED"
+      if processedCount != testSize:
+        echo "  Error: Only ", processedCount, " elements processed, expected ", testSize
+      if eachSum != eachExpectedSum:
+        echo "  Error: Sum mismatch - got ", eachSum, ", expected ", eachExpectedSum
+    
+    deallocShared(eachResults)
+  
+  echo ""
+  echo "Summary:"
+  echo "  numThreads: ", numThreads
+  echo "  vectorWidth: ", vectorWidth
+  echo "  testSize: ", testSize
