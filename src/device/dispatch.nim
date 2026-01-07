@@ -27,9 +27,7 @@
   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ]#
 
-import std/[macros, os, strutils, cpuinfo]
-
-import malebolgia
+import std/[macros, os, strutils, cpuinfo, typedthreads]
 
 import platforms
 
@@ -72,7 +70,7 @@ macro each*(x: ForLoopStmt): untyped =
       let baseChunkSize = (totalWork + numThreads - 1) div numThreads
       let chunkSize = ((baseChunkSize + vectorWidth - 1) div vectorWidth) * vectorWidth
 
-      proc workerAll(threadId: int) {.gcsafe.} =
+      proc workerAll(threadId: int) {.thread.} =
         let startIdx = `lo` + threadId * chunkSize
         let endIdx = min(`lo` + (threadId + 1) * chunkSize, `hi`)
         
@@ -145,10 +143,12 @@ macro each*(x: ForLoopStmt): untyped =
           `body`
           inc `idnt`
       
-      var m = createMaster()
-      m.awaitAll:
-        for threadId in 0..<numThreads:
-          m.spawn workerAll(threadId)
+      # Use standard Nim threads instead of malebolgia
+      var threads: array[32, Thread[int]]  # Support up to 32 threads
+      for threadId in 0..<numThreads:
+        createThread(threads[threadId], workerAll, threadId)
+      for threadId in 0..<numThreads:
+        joinThread(threads[threadId])
 
 macro all*(x: ForLoopStmt): untyped =
   ## Threaded for loop construct
@@ -169,17 +169,19 @@ macro all*(x: ForLoopStmt): untyped =
     let totalWork = `hi` - `lo`
     let baseChunkSize = (totalWork + numThreads - 1) div numThreads
 
-    proc workerEvery(threadId: int) {.gcsafe.} =
+    proc workerEvery(threadId: int) {.thread.} =
       let startIdx = `lo` + threadId * baseChunkSize
       let endIdx = min(`lo` + (threadId + 1) * baseChunkSize, `hi`)
       
       for `idnt` in startIdx..<endIdx:
         `body`
       
-    var m = createMaster()
-    m.awaitAll:
-      for threadId in 0..<numThreads:
-        m.spawn workerEvery(threadId)
+    # Use standard Nim threads instead of malebolgia
+    var threads: array[32, Thread[int]]  # Support up to 32 threads
+    for threadId in 0..<numThreads:
+      createThread(threads[threadId], workerEvery, threadId)
+    for threadId in 0..<numThreads:
+      joinThread(threads[threadId])
 
 when isMainModule:
   const testSize = 80
