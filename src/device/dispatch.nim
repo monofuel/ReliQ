@@ -33,12 +33,10 @@ import platforms
 
 nvidia: import cuda/[cudawrap]
 amd: import hip/[hipwrap]
-cpu: 
-  import simd/[simdtypes, x86wrap]
-  when defined(avx2):
-    import simd/avx2wrap
-  when defined(sse):
-    import simd/ssewrap
+cpu:
+  import hippo
+  import simd/simdtypes
+  # TODO test SIMD Properly, probably have each thread handle chunks with vectorWidth elements
 
 var numThreads*: int = 1
 let envThreads = getEnv("OMP_NUM_THREADS")
@@ -47,207 +45,182 @@ if envThreads.len > 0:
   except ValueError: numThreads = countProcessors()
 
 macro each*(x: ForLoopStmt): untyped =
-  ## Threaded + vectorized for loop consturct
-  ## 
+  ## Threaded + vectorized for loop construct that launches hippo kernels
+  ##
+  ## Used in regular code to automatically launch hippo kernels for parallel execution.
   ## Turns a `for` loop of the form:
   ## ```
-  ## for i in every 0..10: <body>
+  ## for i in each 0..<10: <body>
   ## ```
-  ## into a threaded + vectorized loop on CPU/GPU. Behaves like `Grid`'s
-  ## `accelerator_for` construct. 
+  ## into automatic kernel creation and launching with vectorization.
   let (idnt, call, body) = (x[0], x[1], x[2])
   let (itr, rng) = (call[1], call[1][0])
   let (lo, hi) = (itr[1], itr[^1])
-  
+
   if $rng != "..<":
-    error("Only half-open ranges with '..<' are supported in 'all' loops")
-  
+    error("Only half-open ranges with '..<' are supported")
+
+  # Generate unique kernel name to avoid conflicts
+  let kernelName = genSym(nskProc, "eachKernel")
+
   result = quote do:
-    nvidia: discard
-    amd: discard
-    cpu:
+    # Create hippo kernel that uses the loop body
+    proc `kernelName`(){.hippoGlobal.} =
       let totalWork = `hi` - `lo`
-      let baseChunkSize = (totalWork + numThreads - 1) div numThreads
-      let chunkSize = ((baseChunkSize + vectorWidth - 1) div vectorWidth) * vectorWidth
+      let workPerBlock = (totalWork + int(gridDim.x) - 1) div int(gridDim.x)
+      let blockStart = `lo` + int(blockIdx.x) * workPerBlock
+      let blockEnd = min(`lo` + (int(blockIdx.x) + 1) * workPerBlock, `hi`)
 
-      # Use simple sequential processing for now (closures don't work well with typedthreads)
-      # TODO: Fix threading when called from external modules
-      for threadId in 0..<numThreads:
-        let startIdx = `lo` + threadId * chunkSize
-        let endIdx = min(`lo` + (threadId + 1) * chunkSize, `hi`)
+      # Each thread in the block processes vectorWidth elements
+      let threadStart = blockStart + int(threadIdx.x) * vectorWidth
+      let threadEnd = min(threadStart + vectorWidth, blockEnd)
 
-        # Process vectorWidth-aligned chunks using SIMD for index generation
-        var `idnt` = startIdx
-        let vectorEnd = startIdx + ((endIdx - startIdx) div vectorWidth) * vectorWidth
+      # Process vectorWidth elements per thread
+      var `idnt` = threadStart
+      while `idnt` < threadEnd:
+        `body`
+        inc `idnt`
 
-        # Vectorized section: use SIMD to generate indices efficiently
-        when vectorWidth > 1 and defined(avx2):
-          # Generate base index vector [0, 1, 2, 3, 4, 5, 6, 7] using AVX2
-          when vectorWidth == 8:
-            let baseIndices = mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7)
-            let stepVector = mm256_set1_epi32(vectorWidth.cint)
-            var currentBase = mm256_set1_epi32(`idnt`.cint)
-
-            while `idnt` < vectorEnd:
-              # Generate indices for this chunk: [idnt, idnt+1, ..., idnt+7]
-              let indices = mm256_add_epi32(currentBase, baseIndices)
-
-              # Extract indices and process each element
-              var indexArray: array[8, int32]
-              mm256_storeu_si256(cast[ptr m256i](addr indexArray[0]), indices)
-
-              for lane in 0..<vectorWidth:
-                block:
-                  var `idnt` = indexArray[lane].int
-                  `body`
-
-              # Advance to next chunk
-              currentBase = mm256_add_epi32(currentBase, stepVector)
-              `idnt` += vectorWidth
-          elif vectorWidth == 4 and defined(sse):
-            # Use SSE for 4-wide vectors
-            let baseIndices = mm_setr_epi32(0, 1, 2, 3)
-            let stepVector = mm_set1_epi32(vectorWidth.cint)
-            var currentBase = mm_set1_epi32(`idnt`.cint)
-
-            while `idnt` < vectorEnd:
-              let indices = mm_add_epi32(currentBase, baseIndices)
-
-              var indexArray: array[4, int32]
-              mm_storeu_si128(cast[ptr m128i](addr indexArray[0]), indices)
-
-              for lane in 0..<vectorWidth:
-                block:
-                  var `idnt` = indexArray[lane].int
-                  `body`
-
-              currentBase = mm_add_epi32(currentBase, stepVector)
-              `idnt` += vectorWidth
-          else:
-            # Fallback: sequential processing
-            while `idnt` < vectorEnd:
-              for lane in 0..<vectorWidth:
-                block:
-                  var `idnt` = `idnt` + lane
-                  `body`
-              `idnt` += vectorWidth
-        else:
-          # No SIMD: sequential processing
-          while `idnt` < vectorEnd:
-            for lane in 0..<vectorWidth:
-              block:
-                var `idnt` = `idnt` + lane
-                `body`
-            `idnt` += vectorWidth
-
-        # Remainder: process remaining elements one by one
-        while `idnt` < endIdx:
-          `body`
-          inc `idnt`
+    # Launch the kernel
+    let totalWork = `hi` - `lo`
+    let gridSize = (totalWork + vectorWidth - 1) div vectorWidth
+    hippoLaunchKernel(
+      `kernelName`,
+      gridDim = newDim3(gridSize.uint32, 1, 1),
+      blockDim = newDim3(1, 1, 1),
+      args = hippoArgs()
+    )
 
 macro all*(x: ForLoopStmt): untyped =
-  ## Threaded for loop construct
-  ## 
+  ## Threaded for loop construct that launches hippo kernels
+  ##
+  ## Used in regular code to automatically launch hippo kernels for parallel execution.
   ## Turns a `for` loop of the form:
   ## ```
-  ## for i in every 0..10: <body>
+  ## for i in all 0..<10: <body>
   ## ```
-  ## into a simple loop that iterates over the specified range.
+  ## into automatic kernel creation and launching (one thread per element).
   let (idnt, call, body) = (x[0], x[1], x[2])
   let (itr, rng) = (call[1], call[1][0])
   let (lo, hi) = (itr[1], itr[^1])
-  
+
   if $rng != "..<":
-    error("Only half-open ranges with '..<' are supported in 'every' loops")
-  
+    error("Only half-open ranges with '..<' are supported")
+
+  # Generate unique kernel name to avoid conflicts
+  let kernelName = genSym(nskProc, "allKernel")
+
   result = quote do:
-    let totalWork = `hi` - `lo`
-    let baseChunkSize = (totalWork + numThreads - 1) div numThreads
+    # Create hippo kernel that uses the loop body
+    proc `kernelName`(){.hippoGlobal.} =
+      let totalWork = `hi` - `lo`
+      let workPerBlock = (totalWork + int(gridDim.x) - 1) div int(gridDim.x)
+      let blockStart = `lo` + int(blockIdx.x) * workPerBlock
+      let blockEnd = min(`lo` + (int(blockIdx.x) + 1) * workPerBlock, `hi`)
 
-    # Use simple sequential processing for now (closures don't work well with typedthreads)
-    # TODO: Fix threading when called from external modules
-    for threadId in 0..<numThreads:
-      let startIdx = `lo` + threadId * baseChunkSize
-      let endIdx = min(`lo` + (threadId + 1) * baseChunkSize, `hi`)
-
-      for `idnt` in startIdx..<endIdx:
+      # Each thread processes one element
+      let `idnt` = blockStart + int(threadIdx.x)
+      if `idnt` < blockEnd:
         `body`
 
+    # Launch the kernel (one thread per element)
+    let totalWork = `hi` - `lo`
+    hippoLaunchKernel(
+      `kernelName`,
+      gridDim = newDim3(totalWork.uint32, 1, 1),
+      blockDim = newDim3(1, 1, 1),
+      args = hippoArgs()
+    )
+
+# Global device memory for testing (allocated once)
+var testAllResults = hippoMalloc(sizeof(int) * 80)
+var testEachResults = hippoMalloc(sizeof(int) * 80)
+const TestSize = 80
+
 proc runDispatchTests*(testSize = 80) =
-  ## Run comprehensive tests for the dispatch macros
+  ## Run comprehensive tests for the dispatch macros by launching hippo kernels
   ## Can be called from external test entrypoints
 
+  # Use the module-level constant for now
+  let actualTestSize = TestSize
+
   block:
-    echo "Testing 'all' macro (threaded, non-vectorized)..."
-    var allResults = cast[ptr UncheckedArray[int]](allocShared0(testSize * sizeof(int)))
+    echo "Testing 'all' macro via hippo kernel..."
 
-    for n in all 0..<testSize:
-      allResults[n] = n * 2
+    # Use macro directly - it will create and launch its own kernel
+    for i in all 0..<actualTestSize:
+      let arr = cast[ptr UncheckedArray[int]](testAllResults.p)
+      arr[i] = i * 2
 
-    # Verify all elements were processed
+    # Copy back results
+    var hostAllResults: array[TestSize, int]
+    hippoMemcpy(addr hostAllResults[0], testAllResults, sizeof(int) * actualTestSize, HippoMemcpyDeviceToHost)
+
+    # Verify results
     var allPassed = true
     var allSum = 0
     var allExpectedSum = 0
-    for i in 0..<testSize:
-      allSum += allResults[i]
+    for i in 0..<actualTestSize:
+      allSum += hostAllResults[i]
       allExpectedSum += i * 2
-      if allResults[i] != i * 2:
-        echo "FAIL: allResults[", i, "] = ", allResults[i], ", expected ", i * 2
+      if hostAllResults[i] != i * 2:
+        echo "FAIL: allResults[", i, "] = ", hostAllResults[i], ", expected ", i * 2
         allPassed = false
         break
 
     echo "  Sum of results: ", allSum
     echo "  Expected sum: ", allExpectedSum
-    echo "  Sample values: allResults[0]=", allResults[0], ", allResults[10]=", allResults[10], ", allResults[", testSize-1, "]=", allResults[testSize-1]
+    echo "  Sample values: allResults[0]=", hostAllResults[0], ", allResults[10]=", hostAllResults[10], ", allResults[", actualTestSize-1, "]=", hostAllResults[actualTestSize-1]
 
     if allPassed and allSum == allExpectedSum:
-      echo "✓ 'all' macro test PASSED: All ", testSize, " elements processed correctly"
+      echo "✓ 'all' macro test PASSED: All ", actualTestSize, " elements processed correctly"
     else:
       echo "✗ 'all' macro test FAILED"
 
-    deallocShared(allResults)
-
   block:
     echo ""
-    echo "Testing 'each' macro (threaded + vectorized)..."
-    var eachResults = cast[ptr UncheckedArray[int]](allocShared0(testSize * sizeof(int)))
+    echo "Testing 'each' macro via hippo kernel..."
 
-    for n in each 0..<testSize:
-      eachResults[n] = n * 3
+    # Use macro directly - it will create and launch its own kernel
+    for i in each 0..<actualTestSize:
+      let arr = cast[ptr UncheckedArray[int]](testEachResults.p)
+      arr[i] = i * 3
 
-    # Verify elements were processed (note: each processes in vectorWidth chunks)
+    # Copy back results
+    var hostEachResults: array[TestSize, int]
+    hippoMemcpy(addr hostEachResults[0], testEachResults, sizeof(int) * actualTestSize, HippoMemcpyDeviceToHost)
+
+    # Verify results
     var eachPassed = true
     var processedCount = 0
     var eachSum = 0
     var eachExpectedSum = 0
-    for i in 0..<testSize:
-      eachSum += eachResults[i]
+    for i in 0..<actualTestSize:
+      eachSum += hostEachResults[i]
       eachExpectedSum += i * 3
-      if eachResults[i] == i * 3:
+      if hostEachResults[i] == i * 3:
         inc processedCount
 
-    echo "  Processed ", processedCount, " out of ", testSize, " elements"
+    echo "  Processed ", processedCount, " out of ", actualTestSize, " elements"
     echo "  Sum of results: ", eachSum
     echo "  Expected sum: ", eachExpectedSum
-    echo "  Sample values: eachResults[0]=", eachResults[0], ", eachResults[10]=", eachResults[10], ", eachResults[", testSize-1, "]=", eachResults[testSize-1]
+    echo "  Sample values: eachResults[0]=", hostEachResults[0], ", eachResults[10]=", hostEachResults[10], ", eachResults[", actualTestSize-1, "]=", hostEachResults[actualTestSize-1]
     echo "  (Note: 'each' processes in vectorWidth=", vectorWidth, " chunks)"
 
-    if eachPassed and processedCount == testSize and eachSum == eachExpectedSum:
+    if eachPassed and processedCount == actualTestSize and eachSum == eachExpectedSum:
       echo "✓ 'each' macro test PASSED: Vectorized processing working correctly"
     else:
       echo "✗ 'each' macro test FAILED"
-      if processedCount != testSize:
-        echo "  Error: Only ", processedCount, " elements processed, expected ", testSize
+      if processedCount != actualTestSize:
+        echo "  Error: Only ", processedCount, " elements processed, expected ", actualTestSize
       if eachSum != eachExpectedSum:
         echo "  Error: Sum mismatch - got ", eachSum, ", expected ", eachExpectedSum
-
-    deallocShared(eachResults)
 
   echo ""
   echo "Summary:"
   echo "  numThreads: ", numThreads
   echo "  vectorWidth: ", vectorWidth
-  echo "  testSize: ", testSize
+  echo "  testSize: ", actualTestSize
 
 when isMainModule:
   runDispatchTests()

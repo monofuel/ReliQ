@@ -2,6 +2,8 @@
 ## Tests CPU threading with AVX2 SIMD acceleration and SIMPLE hippo runtime
 ##
 ## Usage: nim r dispatch_cpu_avx2.nim
+## 
+## DO NOT TOUCH
 
 import ../src/device/dispatch
 

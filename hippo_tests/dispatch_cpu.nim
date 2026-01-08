@@ -2,6 +2,8 @@
 ## Tests basic CPU threading with SIMPLE hippo runtime
 ##
 ## Usage: nim r dispatch_cpu.nim
+##
+## DO NOT TOUCH
 
 import ../src/device/dispatch
 
