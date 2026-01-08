@@ -1,0 +1,8 @@
+switch("define", "cpu")
+switch("define", "avx2")
+switch("define", "HippoRuntime=SIMPLE")
+switch("path", "../src")
+switch("define", "vectorWidth=8")
+switch("backend", "cpp")
+switch("passC", "-mavx2")
+switch("passL", "-mavx2")

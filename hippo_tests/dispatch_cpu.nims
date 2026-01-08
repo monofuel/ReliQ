@@ -1,0 +1,5 @@
+switch("define", "cpu")
+switch("define", "HippoRuntime=SIMPLE")
+switch("path", "../src")
+switch("define", "vectorWidth=8")
+switch("backend", "cpp")
