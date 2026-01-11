@@ -1,7 +1,9 @@
-## CPU Dispatch Test Entrypoint
-## Tests basic CPU threading with SIMPLE hippo runtime
+## AMD HIP_CPU Dispatch Test Entrypoint
+## Tests basic AMD with HIP_CPU hippo runtime
+## test the `hip` backend with HIP_CPU runtime for easier testing before fully migrating to GPU.
 ##
-## Usage: nim r dispatch_cpu.nim
+## IMPORTANT: compile with cpp
+## Usage: nim cpp -r dispatch_hip_cpu.nim
 ##
 ## DO NOT TOUCH
 
@@ -9,7 +11,7 @@ import ../src/device/dispatch
 
 when isMainModule:
   echo "=== CPU Dispatch Tests ==="
-  echo "Configuration: CPU threading, SIMPLE runtime, vectorWidth=8"
+  echo "Configuration: AMD, HIP_CPU runtime, vectorWidth=32"
   echo ""
 
   runDispatchTests()

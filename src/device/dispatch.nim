@@ -39,8 +39,8 @@ import
   hippo,
   ./platforms
 
-cpu:
-  import simd/simdtypes
+# vectorWidth is needed for both CPU and GPU code paths
+import simd/simdtypes
   
 # TODO (monofuel) could we handle vectorWidth more automatically?
 # cpu: 4/8/16 automatic depending on avx instruction and register size
@@ -88,11 +88,21 @@ macro each*(x: ForLoopStmt): untyped =
           `body`
           inc `idnt`
       gpu:
-        # TODO
-        # can test with HIP_CPU
         # TODO (monofuel) GPU mode will only be operating over 1 element, needs more thought
         # should operate over $vectorWidth elements in a warp
-        discard
+        # Calculate flat thread index across all blocks and threads
+        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+
+        # Each thread processes vectorWidth elements sequentially
+        let startIdx = `lo` + threadIdxFlat * vectorWidth
+        let endIdx = min(startIdx + vectorWidth, `hi`)
+
+        # Process vectorWidth elements per thread
+        # TODO this is wrong, should not be doing a while loop in gpu code.
+        var `idnt` = startIdx
+        while `idnt` < endIdx:
+          `body`
+          inc `idnt`
 
     # Launch the kernel
     let totalWork = `hi` - `lo`
@@ -110,7 +120,7 @@ macro each*(x: ForLoopStmt): untyped =
       # GPU: use 256 threads per block for better performance
       # TODO (monofuel) should be operating over warps of $vectorWidth elements
       const blockSize = 256'u32
-      let gridSize = ((numChunks + int(blockSize) - 1) div int(blockSize)).uint32
+      let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
         `kernelName`,
         gridDim = newDim3(gridSize, 1, 1),

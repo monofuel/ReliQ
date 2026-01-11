@@ -36,19 +36,20 @@ elif defined(cpu):
 
 template nvidia*(body: untyped): untyped =
   ## Decorator to indicate that a function or proc is specific to the NVIDIA platform.
-  when PLATFORM == "nvidia": body
+  when defined(nvidia): body
   else: discard
 
 template amd*(body: untyped): untyped =
   ## Decorator to indicate that a function or proc is specific to the AMD platform.
-  when PLATFORM == "amd": body
+  when defined(amd): body
   else: discard
 
 template gpu*(body: untyped): untyped =
   ## Decorator to indicate that a function or proc is specific to GPU platforms.
-  nvidia: body
-  amd: body
-  else: discard
+  when defined(nvidia) or defined(amd):
+    body
+  else:
+    discard
 
 template cpu*(body: untyped): untyped =
   ## Decorator to indicate that a function or proc is specific to the CPU platform.
