@@ -4,6 +4,9 @@
 # relying on compile time constants to set target platform and settings
 # hippo should work across all
 
+# Test with ./hippo_tests/test_all.sh
+# Requires hippo >= 0.8.0 for cpu backend fixes.
+
 #[ 
   ReliQ lattice field theory framework: https://github.com/reliq-lft/ReliQ
   Source file: src/device/dispatch.nim
