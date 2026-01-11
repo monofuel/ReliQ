@@ -33,18 +33,19 @@
   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ]#
 
-# NB. macros is required but for some reason nim linter thinks it's unused.
-import std/[macros]
+# NB. hippo and macros are required but for some reason nim linter thinks it's unused.
+import
+  std/[macros],
+  hippo,
+  ./platforms
 
-import platforms
 
 nvidia: import cuda/[cudawrap]
 amd: import hip/[hipwrap]
 cpu:
   import hippo
   import simd/simdtypes
-  # TODO (monofuel) test SIMD Properly, probably have each thread handle chunks with vectorWidth elements
-
+  
 # TODO (monofuel) could we handle vectorWidth more automatically?
 # cpu: 4/8/16 automatic depending on avx instruction and register size
 # nvidia: warp, 32
@@ -76,19 +77,25 @@ macro each*(x: ForLoopStmt): untyped =
   result = quote do:
     # Create hippo kernel that uses the loop body
     proc `kernelName`(){.hippoGlobal.} =
-      # Calculate flat thread index across all blocks and threads
-      let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+      cpu:
+        # Calculate flat thread index across all blocks and threads
+        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
 
-      # Each thread processes vectorWidth elements sequentially
-      let startIdx = `lo` + threadIdxFlat * vectorWidth
-      let endIdx = min(startIdx + vectorWidth, `hi`)
+        # Each thread processes vectorWidth elements sequentially
+        let startIdx = `lo` + threadIdxFlat * vectorWidth
+        let endIdx = min(startIdx + vectorWidth, `hi`)
 
-      # Process vectorWidth elements per thread
-      # TODO (monofuel) this should be using SIMD for $vectorWidth elements
-      var `idnt` = startIdx
-      while `idnt` < endIdx:
-        `body`
-        inc `idnt`
+        # Process vectorWidth elements per thread
+        # TODO (monofuel) SIMD work will need more thought
+        # TODO (monofuel) GPU mode will only be operating over 1 element, needs more thought
+        var `idnt` = startIdx
+        while `idnt` < endIdx:
+          `body`
+          inc `idnt`
+      gpu:
+        # TODO
+        # can test with HIP_CPU
+        discard
 
     # Launch the kernel
     let totalWork = `hi` - `lo`
@@ -104,6 +111,7 @@ macro each*(x: ForLoopStmt): untyped =
       )
     else:
       # GPU: use 256 threads per block for better performance
+      # TODO (monofuel) should be operating over warps of $vectorWidth elements
       const blockSize = 256'u32
       let gridSize = ((numChunks + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
