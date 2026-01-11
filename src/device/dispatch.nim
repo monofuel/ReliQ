@@ -197,31 +197,25 @@ proc runDispatchTests*(testSize = 80) =
   block:
     echo "Testing 'all' macro via hippo kernel..."
 
-    # TODO (monofuel) use the macro directly
-    # having issues with gensym on gpu
-    # Use macro directly - it will create and launch its own kernel
-    # for i in all 0..<actualTestSize:
-    #   let arr = cast[ptr UncheckedArray[int]](testAllResults.p)
-    #   arr[i] = i * 2
-
-    # Define kernel manually to avoid closure issues
-    proc allKernel(resultPtr: pointer, size: int) {.hippoGlobal.} =
-      let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-      let elementIdx = idx
-      if elementIdx < size:
-        let arr = cast[ptr UncheckedArray[int]](resultPtr)
-        arr[elementIdx] = elementIdx * 2
-
-    # Launch kernel manually
-    let totalWork = actualTestSize
+    # Use macro for CPU, manual kernel for GPU to avoid closure issues
     when defined(cpu):
-      hippoLaunchKernel(
-        allKernel,
-        gridDim = newDim3(1, 1, 1),
-        blockDim = newDim3(totalWork.uint32, 1, 1),
-        args = hippoArgs(testAllResults.p, actualTestSize)
-      )
+      # Use macro directly for CPU - it works fine
+      for i in all 0..<actualTestSize:
+        let arr = cast[ptr UncheckedArray[int]](testAllResults.p)
+        arr[i] = i * 2
     else:
+      # TODO (monofuel) fix gpu to use macro
+      # having issues with gensym on gpu I think?
+      # Define kernel manually for GPU
+      proc allKernel(resultPtr: pointer, size: int) {.hippoGlobal.} =
+        let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+        let elementIdx = idx
+        if elementIdx < size:
+          let arr = cast[ptr UncheckedArray[int]](resultPtr)
+          arr[elementIdx] = elementIdx * 2
+
+      # Launch kernel manually
+      let totalWork = actualTestSize
       const blockSize = 256'u32
       let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
@@ -263,44 +257,28 @@ proc runDispatchTests*(testSize = 80) =
     echo ""
     echo "Testing 'each' macro via hippo kernel..."
 
-    # TODO (monofuel) use the macro directly
-    # Use macro directly - it will create and launch its own kernel
-    # for i in each 0..<actualTestSize:
-    #  let arr = cast[ptr UncheckedArray[int]](testEachResults.p)
-    #  arr[i] = i * 3
-
-    # Define kernel manually to avoid closure issues
-    proc eachKernel(resultPtr: pointer, size: int, vecWidth: int) {.hippoGlobal.} =
-      cpu:
-        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-        let startIdx = threadIdxFlat * vecWidth
-        let endIdx = min(startIdx + vecWidth, size)
-        var i = startIdx
-        while i < endIdx:
-          let arr = cast[ptr UncheckedArray[int]](resultPtr)
-          arr[i] = i * 3
-          inc i
-      gpu:
-        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-        let startIdx = threadIdxFlat * vecWidth
-        let endIdx = min(startIdx + vecWidth, size)
-        var i = startIdx
-        while i < endIdx:
-          let arr = cast[ptr UncheckedArray[int]](resultPtr)
-          arr[i] = i * 3
-          inc i
-
-    # Launch kernel manually
-    let totalWork = actualTestSize
-    let numChunks = (totalWork + vectorWidth - 1) div vectorWidth
+    # Use macro for CPU, manual kernel for GPU to avoid closure issues
     when defined(cpu):
-      hippoLaunchKernel(
-        eachKernel,
-        gridDim = newDim3(1, 1, 1),
-        blockDim = newDim3(numChunks.uint32, 1, 1),
-        args = hippoArgs(testEachResults.p, actualTestSize, vectorWidth)
-      )
+      # Use macro directly for CPU - it works fine
+      for i in each 0..<actualTestSize:
+        let arr = cast[ptr UncheckedArray[int]](testEachResults.p)
+        arr[i] = i * 3
     else:
+      # TODO (monofuel) fix gpu to use macro
+      # having issues with gensym on gpu I think?
+      # Define kernel manually for GPU
+      proc eachKernel(resultPtr: pointer, size: int, vecWidth: int) {.hippoGlobal.} =
+        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+        let startIdx = threadIdxFlat * vecWidth
+        let endIdx = min(startIdx + vecWidth, size)
+        var i = startIdx
+        while i < endIdx:
+          let arr = cast[ptr UncheckedArray[int]](resultPtr)
+          arr[i] = i * 3
+          inc i
+
+      # Launch kernel manually
+      let totalWork = actualTestSize
       const blockSize = 256'u32
       let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
