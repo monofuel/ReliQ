@@ -86,8 +86,12 @@ macro each*(x: ForLoopStmt): untyped =
 
         # Process vectorWidth elements per thread
         # TODO (monofuel) SIMD work will need more thought
+        # in hindsight this feels quite silly? why are we spawning so many threads for them to each do 1 simd instruction?
+        # I think I'm doing it this way because I want to mimic GPU code?
+        # but the actual performant way to do this would instead be to make $cpu_count threads that divvy up the work evenly?
+        # Do I want performant CPU code or do I want to mimic GPU code?
         var `idnt` = startIdx
-        while `idnt` < endIdx:
+        while `idnt` < endIdx: # not actually using SIMD but this is where it would go
           `body`
           inc `idnt`
       gpu:
