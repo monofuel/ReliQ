@@ -39,11 +39,7 @@ import
   hippo,
   ./platforms
 
-
-nvidia: import cuda/[cudawrap]
-amd: import hip/[hipwrap]
 cpu:
-  import hippo
   import simd/simdtypes
   
 # TODO (monofuel) could we handle vectorWidth more automatically?
@@ -87,7 +83,6 @@ macro each*(x: ForLoopStmt): untyped =
 
         # Process vectorWidth elements per thread
         # TODO (monofuel) SIMD work will need more thought
-        # TODO (monofuel) GPU mode will only be operating over 1 element, needs more thought
         var `idnt` = startIdx
         while `idnt` < endIdx:
           `body`
@@ -95,6 +90,8 @@ macro each*(x: ForLoopStmt): untyped =
       gpu:
         # TODO
         # can test with HIP_CPU
+        # TODO (monofuel) GPU mode will only be operating over 1 element, needs more thought
+        # should operate over $vectorWidth elements in a warp
         discard
 
     # Launch the kernel
