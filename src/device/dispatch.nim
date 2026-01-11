@@ -33,7 +33,8 @@
   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ]#
 
-import std/[macros, os, strutils, cpuinfo]
+# NB. macros is required but for some reason nim linter thinks it's unused.
+import std/[macros]
 
 import platforms
 
@@ -46,17 +47,10 @@ cpu:
 
 # TODO (monofuel) could we handle vectorWidth more automatically?
 # cpu: 4/8/16 automatic depending on avx instruction and register size
-# nvidia: wave, 32
+# nvidia: warp, 32
 # amd: wavefront, 32 or 64
 
-# this block is great, rely on OMP_NUM_THREADS in a HPC environment and default to countProcessors otherwise
-# TODO (monofuel) Hippo in CPU mode requires using `setThreads()` to set the # of threads
-# maybe hippo should just use OMP_NUM_THREADS natively?
-var numThreads*: int = 1
-let envThreads = getEnv("OMP_NUM_THREADS")
-if envThreads.len > 0:
-  try: numThreads = parseInt(envThreads)
-  except ValueError: numThreads = countProcessors()
+# NB. Hippo's simple CPU backend automatically handles threads with OMP_NUM_THREADS or countProcessors().
 
 # TODO (monofuel) max thread size of a block is like 65k I think? should have fancier logic for larger for loops.
 
@@ -250,7 +244,6 @@ proc runDispatchTests*(testSize = 80) =
 
   echo ""
   echo "Summary:"
-  echo "  numThreads: ", numThreads
   echo "  vectorWidth: ", vectorWidth
   echo "  testSize: ", actualTestSize
 
