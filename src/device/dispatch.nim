@@ -207,10 +207,10 @@ proc runDispatchTests*(testSize = 80) =
       # TODO (monofuel) fix gpu to use macro
       # having issues with gensym on gpu I think?
       # Define kernel manually for GPU
-      proc allKernel(resultPtr: pointer, size: int) {.hippoGlobal.} =
+      proc allKernel(resultPtr: pointer) {.hippoGlobal.} =
         let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
         let elementIdx = idx
-        if elementIdx < size:
+        if elementIdx < TestSize:
           let arr = cast[ptr UncheckedArray[int]](resultPtr)
           arr[elementIdx] = elementIdx * 2
 
@@ -222,7 +222,7 @@ proc runDispatchTests*(testSize = 80) =
         allKernel,
         gridDim = newDim3(gridSize, 1, 1),
         blockDim = newDim3(blockSize, 1, 1),
-        args = hippoArgs(testAllResults.p, actualTestSize)
+        args = hippoArgs(testAllResults.p)
       )
 
     # Copy back results
@@ -267,10 +267,10 @@ proc runDispatchTests*(testSize = 80) =
       # TODO (monofuel) fix gpu to use macro
       # having issues with gensym on gpu I think?
       # Define kernel manually for GPU
-      proc eachKernel(resultPtr: pointer, size: int, vecWidth: int) {.hippoGlobal.} =
+      proc eachKernel(resultPtr: pointer) {.hippoGlobal.} =
         let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-        let startIdx = threadIdxFlat * vecWidth
-        let endIdx = min(startIdx + vecWidth, size)
+        let startIdx = threadIdxFlat * vectorWidth
+        let endIdx = min(startIdx + vectorWidth, TestSize)
         var i = startIdx
         while i < endIdx:
           let arr = cast[ptr UncheckedArray[int]](resultPtr)
@@ -285,7 +285,7 @@ proc runDispatchTests*(testSize = 80) =
         eachKernel,
         gridDim = newDim3(gridSize, 1, 1),
         blockDim = newDim3(blockSize, 1, 1),
-        args = hippoArgs(testEachResults.p, actualTestSize, vectorWidth)
+        args = hippoArgs(testEachResults.p)
       )
 
     # Copy back results

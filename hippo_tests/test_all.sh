@@ -33,4 +33,22 @@ else
 fi
 
 echo
-echo "=== All tests completed successfully! ==="
+echo "Running HIP-CPU dispatch test..."
+if nim cpp -r dispatch_hip_cpu.nim; then
+    echo "✓ HIP-CPU dispatch test PASSED"
+else
+    echo "✗ HIP-CPU dispatch test FAILED"
+    exit 1
+fi
+
+echo
+echo "Running GPU dispatch test..."
+if nim cpp -r dispatch_hippo.nim; then
+    echo "✓ GPU dispatch test PASSED"
+else
+    echo "! GPU dispatch test FAILED (GPU may not be available)"
+    echo "  This is expected if no GPU is present"
+fi
+
+echo
+echo "=== All tests completed! ==="

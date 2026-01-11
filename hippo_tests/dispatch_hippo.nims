@@ -1,0 +1,7 @@
+switch("define", "amd")
+switch("define", "HippoRuntime=HIP")
+switch("path", "../src")
+switch("define", "vectorWidth=32")
+switch("backend", "cpp")
+switch("cc", "hipcc")
+switch("define", "useMalloc")
