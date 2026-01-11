@@ -43,7 +43,7 @@ import
   ./platforms
 
 # vectorWidth is needed for both CPU and GPU code paths
-import simd/simdtypes
+import ../simd/simdtypes
   
 # TODO (monofuel) could we handle vectorWidth more automatically?
 # cpu: 4/8/16 automatic depending on avx instruction and register size
@@ -91,21 +91,12 @@ macro each*(x: ForLoopStmt): untyped =
           `body`
           inc `idnt`
       gpu:
-        # TODO (monofuel) GPU mode will only be operating over 1 element, needs more thought
-        # should operate over $vectorWidth elements in a warp
         # Calculate flat thread index across all blocks and threads
-        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-
-        # Each thread processes vectorWidth elements sequentially
-        let startIdx = `lo` + threadIdxFlat * vectorWidth
-        let endIdx = min(startIdx + vectorWidth, `hi`)
-
-        # Process vectorWidth elements per thread
-        # TODO this is wrong, should not be doing a while loop in gpu code.
-        var `idnt` = startIdx
-        while `idnt` < endIdx:
+        let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+        let elementIdx = `lo` + idx
+        if elementIdx < `hi`:
+          let `idnt` = elementIdx
           `body`
-          inc `idnt`
 
     # Launch the kernel
     let totalWork = `hi` - `lo`
@@ -120,8 +111,7 @@ macro each*(x: ForLoopStmt): untyped =
         args = hippoArgs()
       )
     else:
-      # GPU: use 256 threads per block for better performance
-      # TODO (monofuel) should be operating over warps of $vectorWidth elements
+      # GPU: use 256 threads per block for better performance (multiple of vectorWidth for warp alignment)
       const blockSize = 256'u32
       let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
@@ -271,14 +261,11 @@ proc runDispatchTests*(testSize = 80) =
       # having issues with gensym on gpu I think?
       # Define kernel manually for GPU
       proc eachKernel(resultPtr: pointer) {.hippoGlobal.} =
-        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-        let startIdx = threadIdxFlat * vectorWidth
-        let endIdx = min(startIdx + vectorWidth, TestSize)
-        var i = startIdx
-        while i < endIdx:
+        let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+        let elementIdx = idx
+        if elementIdx < TestSize:
           let arr = cast[ptr UncheckedArray[int]](resultPtr)
-          arr[i] = i * 3
-          inc i
+          arr[elementIdx] = elementIdx * 3
 
       # Launch kernel manually
       let totalWork = actualTestSize
