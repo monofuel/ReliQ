@@ -180,6 +180,9 @@ proc runDispatchTests*(testSize = 80) =
     var hostAllResults: array[TestSize, int]
     hippoMemcpy(addr hostAllResults[0], testAllResults, sizeof(int) * actualTestSize, HippoMemcpyDeviceToHost)
 
+    # Synchronize to catch any gpu errors before verifying results
+    hippoSynchronize()
+
     # Verify results
     var allPassed = true
     var allSum = 0
@@ -213,6 +216,9 @@ proc runDispatchTests*(testSize = 80) =
     # Copy back results
     var hostEachResults: array[TestSize, int]
     hippoMemcpy(addr hostEachResults[0], testEachResults, sizeof(int) * actualTestSize, HippoMemcpyDeviceToHost)
+
+    # Synchronize to catch any gpu errors before verifying results
+    hippoSynchronize()
 
     # Verify results
     var eachPassed = true
