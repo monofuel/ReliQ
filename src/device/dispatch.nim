@@ -1,3 +1,9 @@
+# monofuel note: working on migrating dispatch to hippo.
+# I haven't used macros with hippo so this is very fun (tm)
+# example launchers: ../../ReliQ/hippo_tests
+# relying on compile time constants to set target platform and settings
+# hippo should work across all
+
 #[ 
   ReliQ lattice field theory framework: https://github.com/reliq-lft/ReliQ
   Source file: src/device/dispatch.nim
@@ -36,13 +42,23 @@ amd: import hip/[hipwrap]
 cpu:
   import hippo
   import simd/simdtypes
-  # TODO test SIMD Properly, probably have each thread handle chunks with vectorWidth elements
+  # TODO (monofuel) test SIMD Properly, probably have each thread handle chunks with vectorWidth elements
 
+# TODO (monofuel) could we handle vectorWidth more automatically?
+# cpu: 4/8/16 automatic depending on avx instruction and register size
+# nvidia: wave, 32
+# amd: wavefront, 32 or 64
+
+# this block is great, rely on OMP_NUM_THREADS in a HPC environment and default to countProcessors otherwise
+# TODO (monofuel) Hippo in CPU mode requires using `setThreads()` to set the # of threads
+# maybe hippo should just use OMP_NUM_THREADS natively?
 var numThreads*: int = 1
 let envThreads = getEnv("OMP_NUM_THREADS")
 if envThreads.len > 0:
   try: numThreads = parseInt(envThreads)
   except ValueError: numThreads = countProcessors()
+
+# TODO (monofuel) max thread size of a block is like 65k I think? should have fancier logic for larger for loops.
 
 macro each*(x: ForLoopStmt): untyped =
   ## Threaded + vectorized for loop construct that launches hippo kernels
@@ -76,6 +92,7 @@ macro each*(x: ForLoopStmt): untyped =
       let threadEnd = min(threadStart + vectorWidth, blockEnd)
 
       # Process vectorWidth elements per thread
+      # TODO (monofuel) this should be using SIMD for $vectorWidth elements
       var `idnt` = threadStart
       while `idnt` < threadEnd:
         `body`
@@ -84,6 +101,14 @@ macro each*(x: ForLoopStmt): untyped =
     # Launch the kernel
     let totalWork = `hi` - `lo`
     let gridSize = (totalWork + vectorWidth - 1) div vectorWidth
+    # TODO (monofuel) this is wrong.
+    # the vector width should be the wave size on GPU
+    # and wave size should be one of the dimensions
+    # ALSO we should be using many threads in a block, not many blocks.
+    # blockDim should be something like [(length mod WaveSize + 1), WaveSize] I think
+    # and each gpu thread should process 1 element
+    # on CPU, we should actually do different code.
+    # CPU should do [(length mod WaveSize + 1), 1] where each thread processes $vectorWidth elements with SIMD
     hippoLaunchKernel(
       `kernelName`,
       gridDim = newDim3(gridSize.uint32, 1, 1),
@@ -107,6 +132,7 @@ macro all*(x: ForLoopStmt): untyped =
   if $rng != "..<":
     error("Only half-open ranges with '..<' are supported")
 
+  # monofuel note: this is very clever, I should implement this for helper macros in hippo
   # Generate unique kernel name to avoid conflicts
   let kernelName = genSym(nskProc, "allKernel")
 
@@ -125,6 +151,8 @@ macro all*(x: ForLoopStmt): untyped =
 
     # Launch the kernel (one thread per element)
     let totalWork = `hi` - `lo`
+    # TODO (monofuel) we should be using many threads in a block, not many blocks.
+    # blockDim should could just be [length,1,1] for now
     hippoLaunchKernel(
       `kernelName`,
       gridDim = newDim3(totalWork.uint32, 1, 1),
@@ -132,6 +160,8 @@ macro all*(x: ForLoopStmt): untyped =
       args = hippoArgs()
     )
 
+# TODO (monofuel) how to handle memory easily with macros?
+#                 this will be very important, but possibly also tricky.
 # Global device memory for testing (allocated once)
 var testAllResults = hippoMalloc(sizeof(int) * 80)
 var testEachResults = hippoMalloc(sizeof(int) * 80)
@@ -215,6 +245,8 @@ proc runDispatchTests*(testSize = 80) =
         echo "  Error: Only ", processedCount, " elements processed, expected ", actualTestSize
       if eachSum != eachExpectedSum:
         echo "  Error: Sum mismatch - got ", eachSum, ", expected ", eachExpectedSum
+
+  # TODO (monofuel) we should check for errors with hippoCheckLastError()
 
   echo ""
   echo "Summary:"
