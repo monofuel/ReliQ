@@ -92,8 +92,9 @@ macro each*(x: ForLoopStmt): untyped =
           inc `idnt`
       gpu:
         # Calculate flat thread index across all blocks and threads
-        let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-        let elementIdx = `lo` + idx
+        # blockDim is (vectorWidth, threadsPerBlock, 1) for explicit warp organization
+        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) * int(blockDim.y) + int(threadIdx.y) * int(blockDim.x) + int(threadIdx.x)
+        let elementIdx = `lo` + threadIdxFlat
         if elementIdx < `hi`:
           let `idnt` = elementIdx
           `body`
@@ -111,13 +112,15 @@ macro each*(x: ForLoopStmt): untyped =
         args = hippoArgs()
       )
     else:
-      # GPU: use 256 threads per block for better performance (multiple of vectorWidth for warp alignment)
+      # GPU: use 256 threads per block with explicit warp organization
+      # blockDim = (vectorWidth, threadsPerBlock, 1) where vectorWidth is warp/wavefront size
       const blockSize = 256'u32
+      let threadsPerBlock = blockSize div vectorWidth.uint32
       let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
         `kernelName`,
         gridDim = newDim3(gridSize, 1, 1),
-        blockDim = newDim3(blockSize, 1, 1),
+        blockDim = newDim3(vectorWidth.uint32, threadsPerBlock, 1),
         args = hippoArgs()
       )
 
@@ -261,8 +264,9 @@ proc runDispatchTests*(testSize = 80) =
       # having issues with gensym on gpu I think?
       # Define kernel manually for GPU
       proc eachKernel(resultPtr: pointer) {.hippoGlobal.} =
-        let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
-        let elementIdx = idx
+        # blockDim is (vectorWidth, threadsPerBlock, 1) for explicit warp organization
+        let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) * int(blockDim.y) + int(threadIdx.y) * int(blockDim.x) + int(threadIdx.x)
+        let elementIdx = threadIdxFlat
         if elementIdx < TestSize:
           let arr = cast[ptr UncheckedArray[int]](resultPtr)
           arr[elementIdx] = elementIdx * 3
@@ -270,11 +274,12 @@ proc runDispatchTests*(testSize = 80) =
       # Launch kernel manually
       let totalWork = actualTestSize
       const blockSize = 256'u32
+      let threadsPerBlock = blockSize div vectorWidth.uint32
       let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
       hippoLaunchKernel(
         eachKernel,
         gridDim = newDim3(gridSize, 1, 1),
-        blockDim = newDim3(blockSize, 1, 1),
+        blockDim = newDim3(vectorWidth.uint32, threadsPerBlock, 1),
         args = hippoArgs(testEachResults.p)
       )
 
