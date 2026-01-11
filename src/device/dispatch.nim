@@ -76,39 +76,42 @@ macro each*(x: ForLoopStmt): untyped =
   result = quote do:
     # Create hippo kernel that uses the loop body
     proc `kernelName`(){.hippoGlobal.} =
-      let totalWork = `hi` - `lo`
-      let workPerBlock = (totalWork + int(gridDim.x) - 1) div int(gridDim.x)
-      let blockStart = `lo` + int(blockIdx.x) * workPerBlock
-      let blockEnd = min(`lo` + (int(blockIdx.x) + 1) * workPerBlock, `hi`)
+      # Calculate flat thread index across all blocks and threads
+      let threadIdxFlat = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
 
-      # Each thread in the block processes vectorWidth elements
-      let threadStart = blockStart + int(threadIdx.x) * vectorWidth
-      let threadEnd = min(threadStart + vectorWidth, blockEnd)
+      # Each thread processes vectorWidth elements sequentially
+      let startIdx = `lo` + threadIdxFlat * vectorWidth
+      let endIdx = min(startIdx + vectorWidth, `hi`)
 
       # Process vectorWidth elements per thread
       # TODO (monofuel) this should be using SIMD for $vectorWidth elements
-      var `idnt` = threadStart
-      while `idnt` < threadEnd:
+      var `idnt` = startIdx
+      while `idnt` < endIdx:
         `body`
         inc `idnt`
 
     # Launch the kernel
     let totalWork = `hi` - `lo`
-    let gridSize = (totalWork + vectorWidth - 1) div vectorWidth
-    # TODO (monofuel) this is wrong.
-    # the vector width should be the wave size on GPU
-    # and wave size should be one of the dimensions
-    # ALSO we should be using many threads in a block, not many blocks.
-    # blockDim should be something like [(length mod WaveSize + 1), WaveSize] I think
-    # and each gpu thread should process 1 element
-    # on CPU, we should actually do different code.
-    # CPU should do [(length mod WaveSize + 1), 1] where each thread processes $vectorWidth elements with SIMD
-    hippoLaunchKernel(
-      `kernelName`,
-      gridDim = newDim3(gridSize.uint32, 1, 1),
-      blockDim = newDim3(1, 1, 1),
-      args = hippoArgs()
-    )
+    let numChunks = (totalWork + vectorWidth - 1) div vectorWidth
+    # Use different launch configurations for CPU vs GPU
+    when defined(cpu):
+      # CPU: one block with many threads (one thread per vectorWidth elements chunk)
+      hippoLaunchKernel(
+        `kernelName`,
+        gridDim = newDim3(1, 1, 1),
+        blockDim = newDim3(numChunks.uint32, 1, 1),
+        args = hippoArgs()
+      )
+    else:
+      # GPU: use 256 threads per block for better performance
+      const blockSize = 256'u32
+      let gridSize = ((numChunks + int(blockSize) - 1) div int(blockSize)).uint32
+      hippoLaunchKernel(
+        `kernelName`,
+        gridDim = newDim3(gridSize, 1, 1),
+        blockDim = newDim3(blockSize, 1, 1),
+        args = hippoArgs()
+      )
 
 macro all*(x: ForLoopStmt): untyped =
   ## Threaded for loop construct that launches hippo kernels
@@ -133,26 +136,34 @@ macro all*(x: ForLoopStmt): untyped =
   result = quote do:
     # Create hippo kernel that uses the loop body
     proc `kernelName`(){.hippoGlobal.} =
-      let totalWork = `hi` - `lo`
-      let workPerBlock = (totalWork + int(gridDim.x) - 1) div int(gridDim.x)
-      let blockStart = `lo` + int(blockIdx.x) * workPerBlock
-      let blockEnd = min(`lo` + (int(blockIdx.x) + 1) * workPerBlock, `hi`)
-
-      # Each thread processes one element
-      let `idnt` = blockStart + int(threadIdx.x)
-      if `idnt` < blockEnd:
+      # Calculate flat thread index across all blocks and threads
+      let idx = int(blockIdx.x) * int(blockDim.x) + int(threadIdx.x)
+      let elementIdx = `lo` + idx
+      if elementIdx < `hi`:
+        let `idnt` = elementIdx
         `body`
 
     # Launch the kernel (one thread per element)
     let totalWork = `hi` - `lo`
-    # TODO (monofuel) we should be using many threads in a block, not many blocks.
-    # blockDim should could just be [length,1,1] for now
-    hippoLaunchKernel(
-      `kernelName`,
-      gridDim = newDim3(totalWork.uint32, 1, 1),
-      blockDim = newDim3(1, 1, 1),
-      args = hippoArgs()
-    )
+    # Use different launch configurations for CPU vs GPU
+    when defined(cpu):
+      # CPU: one block with many threads (one thread per element)
+      hippoLaunchKernel(
+        `kernelName`,
+        gridDim = newDim3(1, 1, 1),
+        blockDim = newDim3(totalWork.uint32, 1, 1),
+        args = hippoArgs()
+      )
+    else:
+      # GPU: use 256 threads per block for better performance
+      const blockSize = 256'u32
+      let gridSize = ((totalWork + int(blockSize) - 1) div int(blockSize)).uint32
+      hippoLaunchKernel(
+        `kernelName`,
+        gridDim = newDim3(gridSize, 1, 1),
+        blockDim = newDim3(blockSize, 1, 1),
+        args = hippoArgs()
+      )
 
 # TODO (monofuel) how to handle memory easily with macros?
 #                 this will be very important, but possibly also tricky.
